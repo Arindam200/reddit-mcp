@@ -1,11 +1,11 @@
-import json
 import logging
-from os import getenv
-from typing import Dict, List, Optional
-from mcp.server.fastmcp import FastMCP
-import praw  # type: ignore
-from datetime import datetime
 import time
+from datetime import datetime
+from os import getenv
+from typing import Dict, Optional
+
+import praw  # type: ignore
+from mcp.server.fastmcp import FastMCP
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -14,42 +14,93 @@ logger = logging.getLogger(__name__)
 # Initialize MCP server
 mcp = FastMCP("Reddit MCP")
 
-# Initialize Reddit client
+# Global variable to track if Reddit client is in read-only mode
+_reddit_client = None
+_reddit_is_read_only = None
+
 def get_reddit_client() -> Optional[praw.Reddit]:
-    """Initialize and return Reddit client with credentials"""
+    """Initialize and return Reddit client with or without credentials"""
+    global _reddit_client, _reddit_is_read_only
+    
+    # Return cached client if already initialized
+    if _reddit_client is not None:
+        return _reddit_client
+    
+    """Initialize and return Reddit client with or without credentials"""
     client_id = getenv("REDDIT_CLIENT_ID")
     client_secret = getenv("REDDIT_CLIENT_SECRET")
     user_agent = getenv("REDDIT_USER_AGENT", "RedditMCPServer v1.0")
     username = getenv("REDDIT_USERNAME")
     password = getenv("REDDIT_PASSWORD")
 
-    if not all([client_id, client_secret]):
-        logger.error("Missing Reddit API credentials")
-        return None
+    # Initialize with read-only mode flag
+    _reddit_is_read_only = True
 
     try:
-        if all([username, password]):
-            logger.info(f"Initializing Reddit client with user authentication for u/{username}")
-            return praw.Reddit(
-                client_id=client_id,
-                client_secret=client_secret,
-                user_agent=user_agent,
-                username=username,
-                password=password,
-            )
-        else:
+        # Check if we have credentials for authenticated access
+        if username and password and client_id and client_secret:
+            logger.info(f"Attempting to initialize Reddit client with user authentication for u/{username}")
+            try:
+                reddit_client = praw.Reddit(
+                    client_id=client_id,
+                    client_secret=client_secret,
+                    user_agent=user_agent,
+                    username=username,
+                    password=password,
+                    check_for_updates=False
+                )
+                # Test the authentication by making a simple API call
+                reddit_client.user.me()
+                logger.info(f"Successfully authenticated as u/{username}")
+                _reddit_is_read_only = False
+                return reddit_client
+            except Exception as auth_error:
+                logger.warning(f"Authentication failed for u/{username}: {auth_error}")
+                logger.info("Falling back to read-only access")
+                # Fall through to read-only initialization
+
+        # Check if we have client credentials for read-only access
+        if client_id and client_secret:
             logger.info("Initializing Reddit client with read-only access")
             return praw.Reddit(
                 client_id=client_id,
                 client_secret=client_secret,
                 user_agent=user_agent,
+                check_for_updates=False,
+                read_only=True
             )
+
+        # Try to initialize in read-only mode without credentials
+        logger.info("Initializing Reddit client in read-only mode without credentials")
+        reddit_client = praw.Reddit(
+            user_agent=user_agent,
+            check_for_updates=False,
+            read_only=True,
+        )
+        # Test read-only access by fetching a public subreddit
+        try:
+            reddit_client.subreddit("popular").hot(limit=1)
+            return reddit_client
+        except Exception as e:
+            logger.error(f"Failed to initialize read-only client: {e}")
+            return None
+
     except Exception as e:
         logger.error(f"Error initializing Reddit client: {e}")
         return None
 
 # Initialize Reddit client
-reddit = get_reddit_client()
+_reddit_client = get_reddit_client()
+
+def require_write_access(func):
+    """Decorator to ensure write access is available"""
+    def wrapper(*args, **kwargs):
+        if reddit_is_read_only:
+            raise ValueError("Write operation not allowed in read-only mode. Please provide valid credentials.")
+        if not _check_user_auth():
+            raise Exception("Authentication required for write operations.")
+        return func(*args, **kwargs)
+    return wrapper
 
 def _format_timestamp(timestamp: float) -> str:
     """Convert Unix timestamp to human readable format.
@@ -308,25 +359,21 @@ def _check_post_exists(post_id: str) -> bool:
         logger.error(f"Error checking post existence: {str(e)}")
         return False
 
+
 def _check_user_auth() -> bool:
-    """Check if user authentication is available"""
+    """Check if user authentication is available for write operations"""
     if not reddit:
         logger.error("Reddit client not initialized")
         return False
-
-    username = getenv("REDDIT_USERNAME")
-    password = getenv("REDDIT_PASSWORD")
-
-    if not all([username, password]):
-        logger.error("User authentication required. Please provide username and password.")
+    
+    if _reddit_is_read_only:
+        logger.error("Reddit client is in read-only mode")
         return False
+    
+    # Optional: Keep the try/except only for first-time verification
+    # or remove it entirely since we already verified during init
+    return True
 
-    try:
-        reddit.user.me()
-        return True
-    except Exception as e:
-        logger.error(f"Authentication error: {e}")
-        return False
 
 def _format_comment(comment: praw.models.Comment) -> str:
     """Format comment information with AI-driven insights."""
@@ -492,6 +539,7 @@ def get_subreddit_stats(subreddit: str) -> Dict:
         raise
 
 @mcp.tool()
+@require_write_access
 def create_post(
     subreddit: str,
     title: str,
@@ -510,12 +558,18 @@ def create_post(
 
     Returns:
         Dict: Formatted information about the created post
+
+    Raises:
+        ValueError: If the client is in read-only mode
     """
+    if _reddit_is_read_only:
+        raise ValueError("Cannot create posts in read-only mode. Please provide valid credentials.")
+
     if not reddit:
         raise Exception("Reddit client not initialized")
 
     if not _check_user_auth():
-        raise Exception("User authentication required for posting")
+        raise Exception("Authentication required for posting. Please provide valid REDDIT_USERNAME and REDDIT_PASSWORD environment variables.")
 
     try:
         logger.info(f"Creating post in r/{subreddit}")
@@ -554,6 +608,7 @@ def create_post(
         raise
 
 @mcp.tool()
+@require_write_access
 def reply_to_post(post_id: str, content: str, subreddit: Optional[str] = None) -> Dict:
     """Post a reply to an existing Reddit post.
 
@@ -564,12 +619,18 @@ def reply_to_post(post_id: str, content: str, subreddit: Optional[str] = None) -
 
     Returns:
         Dict: Formatted information about the created reply
+
+    Raises:
+        ValueError: If the client is in read-only mode
     """
+    if _reddit_is_read_only:
+        raise ValueError("Cannot create replies in read-only mode. Please provide valid credentials.")
+
     if not reddit:
         raise Exception("Reddit client not initialized")
 
     if not _check_user_auth():
-        raise Exception("User authentication required for posting replies")
+        raise Exception("Authentication required for replying to posts. Please provide valid REDDIT_USERNAME and REDDIT_PASSWORD environment variables.")
 
     try:
         logger.info(f"Creating reply to post {post_id}")
@@ -612,6 +673,7 @@ def reply_to_post(post_id: str, content: str, subreddit: Optional[str] = None) -
         raise
 
 @mcp.tool()
+@require_write_access
 def reply_to_comment(comment_id: str, content: str, subreddit: Optional[str] = None) -> Dict:
     """Post a reply to an existing Reddit comment.
 
@@ -626,8 +688,12 @@ def reply_to_comment(comment_id: str, content: str, subreddit: Optional[str] = N
     if not reddit:
         raise Exception("Reddit client not initialized")
 
+    # Check if client is in read-only mode
+    if _reddit_is_read_only:
+        raise ValueError("Cannot reply to comment: Reddit client is in read-only mode. Please provide valid credentials.")
+
     if not _check_user_auth():
-        raise Exception("User authentication required for posting replies")
+        raise Exception("Authentication required for replying to comments. Please provide valid REDDIT_USERNAME and REDDIT_PASSWORD environment variables.")
 
     try:
         logger.info(f"Creating reply to comment {comment_id}")
@@ -737,6 +803,7 @@ def get_submission_by_id(submission_id: str) -> Dict:
         raise
 
 @mcp.tool()
+@require_write_access
 def who_am_i() -> Dict:
     """Get information about the currently authenticated user.
 
