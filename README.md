@@ -2,6 +2,10 @@
 
 This repository contains a Model Context Protocol server implementation for Reddit that allows AI assistants to access and interact with Reddit content through PRAW (Python Reddit API Wrapper).
 
+<a href="https://glama.ai/mcp/servers/@Arindam200/reddit-mcp">
+  <img width="380" height="200" src="https://glama.ai/mcp/servers/@Arindam200/reddit-mcp/badge" alt="Reddit Server MCP server" />
+</a>
+
 ![image](./Demo.png)
 
 ## What is MCP?
