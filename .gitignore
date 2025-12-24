@@ -11,3 +11,5 @@ wheels/
 
 # PyCharm generated files
 .idea/
+# VSCode generated files
+.vscode/

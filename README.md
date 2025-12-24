@@ -104,6 +104,8 @@ The server provides the following tools:
 - `create_post(subreddit, title, content, flair, is_self)` - Create an optimized post
 - `reply_to_post(post_id, content, subreddit)` - Add a reply with engagement insights
 - `reply_to_comment(comment_id, content, subreddit)` - Add a strategic reply
+- `upvote_post(post_id)` - Upvote a Reddit post
+- `upvote_comment(comment_id)` - Upvote a Reddit comment
 
 ## Example Queries
 
@@ -122,6 +124,8 @@ Here are some examples of what you can ask an AI assistant connected to this ser
 - "Create a post in r/Python about a new project"
 - "Reply to this post with an insightful comment"
 - "What's the best time to post in this subreddit?"
+- "Upvote this post" or "Upvote post abc123"
+- "Upvote this comment" or "Upvote comment xyz789"
 
 ## Advanced Features
 

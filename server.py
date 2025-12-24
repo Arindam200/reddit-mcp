@@ -2323,5 +2323,189 @@ def who_am_i() -> Dict[str, Any]:
         raise RuntimeError(f"Failed to retrieve user information: {e}") from e
 
 
+@mcp.tool()
+@require_write_access
+def upvote_post(post_id: str) -> Dict[str, Any]:
+    """Upvote a Reddit post.
+
+    Args:
+        post_id: The ID of the post to upvote (can be full URL, permalink, or just ID)
+
+    Returns:
+        Dictionary containing information about the upvoted post
+
+    Raises:
+        ValueError: If input validation fails or post is not found
+        RuntimeError: For other errors during the upvote operation
+    """
+    manager = RedditClientManager()
+    if not manager.client:
+        raise RuntimeError("Reddit client not initialized")
+
+    # Input validation
+    if not post_id or not isinstance(post_id, str):
+        raise ValueError("Post ID is required")
+
+    try:
+        # Clean up the post_id if it's a full URL or permalink
+        clean_post_id = _extract_reddit_id(post_id)
+        logger.info(f"Upvoting post ID: {clean_post_id}")
+
+        # Get the submission object
+        submission = manager.client.submission(id=clean_post_id)
+
+        # Verify the post exists by accessing its attributes
+        try:
+            post_title = submission.title
+            post_author = getattr(submission, "author", None)
+            post_subreddit = submission.subreddit
+
+            logger.info(
+                f"Upvoting post: "
+                f"Title: {post_title}, "
+                f"Author: {post_author}, "
+                f"Subreddit: r/{post_subreddit.display_name}"
+            )
+
+        except Exception as e:
+            logger.exception(f"Failed to access post {clean_post_id}: {e}")
+            raise ValueError(f"Post {clean_post_id} not found or inaccessible") from e
+
+        # Check if the post is archived
+        if getattr(submission, "archived", False):
+            raise ValueError("Cannot upvote an archived post")
+
+        # Upvote the post
+        try:
+            submission.upvote()
+            logger.info(f"Post upvoted successfully: {clean_post_id}")
+
+            return {
+                "success": True,
+                "action": "upvote",
+                "post": {
+                    "id": submission.id,
+                    "title": post_title,
+                    "author": str(post_author) if post_author else "[deleted]",
+                    "subreddit": post_subreddit.display_name,
+                    "score": submission.score,
+                    "upvote_ratio": submission.upvote_ratio,
+                    "permalink": f"https://reddit.com{submission.permalink}",
+                },
+                "metadata": {
+                    "upvoted_at": _format_timestamp(time.time()),
+                    "post_id": clean_post_id,
+                },
+            }
+
+        except Exception as upvote_error:
+            logger.exception(f"Failed to upvote post: {upvote_error}")
+            if "RATELIMIT" in str(upvote_error).upper():
+                raise RuntimeError(
+                    "You're doing that too much. Please wait before voting again."
+                ) from upvote_error
+            raise RuntimeError(f"Failed to upvote post: {upvote_error}") from upvote_error
+
+    except Exception as e:
+        logger.exception(f"Error in upvote_post for ID {post_id}: {e}")
+        if isinstance(e, (ValueError, RuntimeError)):
+            raise
+        raise RuntimeError(f"Failed to upvote post: {e}") from e
+
+
+@mcp.tool()
+@require_write_access
+def upvote_comment(comment_id: str) -> Dict[str, Any]:
+    """Upvote a Reddit comment.
+
+    Args:
+        comment_id: The ID of the comment to upvote (can be full URL, permalink, or just ID)
+
+    Returns:
+        Dictionary containing information about the upvoted comment
+
+    Raises:
+        ValueError: If input validation fails or comment is not found
+        RuntimeError: For other errors during the upvote operation
+    """
+    manager = RedditClientManager()
+    if not manager.client:
+        raise RuntimeError("Reddit client not initialized")
+
+    # Input validation
+    if not comment_id or not isinstance(comment_id, str):
+        raise ValueError("Comment ID is required")
+
+    try:
+        # Clean up the comment_id if it's a full URL or permalink
+        clean_comment_id = _extract_reddit_id(comment_id)
+        logger.info(f"Upvoting comment ID: {clean_comment_id}")
+
+        # Get the comment object
+        comment = manager.client.comment(id=clean_comment_id)
+
+        # Verify the comment exists by accessing its attributes
+        try:
+            comment_body = comment.body
+            comment_author = getattr(comment, "author", None)
+            comment_subreddit = comment.subreddit
+
+            logger.info(
+                f"Upvoting comment: "
+                f"Author: {comment_author}, "
+                f"Subreddit: r/{comment_subreddit.display_name}"
+            )
+
+        except Exception as e:
+            logger.exception(f"Failed to access comment {clean_comment_id}: {e}")
+            raise ValueError(f"Comment {clean_comment_id} not found or inaccessible") from e
+
+        # Check if the parent submission is archived
+        try:
+            submission = comment.submission
+            if getattr(submission, "archived", False):
+                raise ValueError("Cannot upvote a comment in an archived thread")
+        except ValueError:
+            raise
+        except Exception as check_error:
+            logger.debug(f"Could not check submission status: {check_error}")
+
+        # Upvote the comment
+        try:
+            comment.upvote()
+            logger.info(f"Comment upvoted successfully: {clean_comment_id}")
+
+            return {
+                "success": True,
+                "action": "upvote",
+                "comment": {
+                    "id": comment.id,
+                    "body": comment_body[:200] + "..." if len(comment_body) > 200 else comment_body,
+                    "author": str(comment_author) if comment_author else "[deleted]",
+                    "subreddit": comment_subreddit.display_name,
+                    "score": comment.score,
+                    "permalink": f"https://reddit.com{comment.permalink}",
+                },
+                "metadata": {
+                    "upvoted_at": _format_timestamp(time.time()),
+                    "comment_id": clean_comment_id,
+                },
+            }
+
+        except Exception as upvote_error:
+            logger.exception(f"Failed to upvote comment: {upvote_error}")
+            if "RATELIMIT" in str(upvote_error).upper():
+                raise RuntimeError(
+                    "You're doing that too much. Please wait before voting again."
+                ) from upvote_error
+            raise RuntimeError(f"Failed to upvote comment: {upvote_error}") from upvote_error
+
+    except Exception as e:
+        logger.exception(f"Error in upvote_comment for ID {comment_id}: {e}")
+        if isinstance(e, (ValueError, RuntimeError)):
+            raise
+        raise RuntimeError(f"Failed to upvote comment: {e}") from e
+
+
 if __name__ == "__main__":
     mcp.run()
