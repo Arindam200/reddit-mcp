@@ -104,6 +104,12 @@ The server provides the following tools:
 - `create_post(subreddit, title, content, flair, is_self)` - Create an optimized post
 - `reply_to_post(post_id, content, subreddit)` - Add a reply with engagement insights
 - `reply_to_comment(comment_id, content, subreddit)` - Add a strategic reply
+- `send_message(username, subject, message)` - Send a private message to a user.
+  Subject is capped at 100 characters by Reddit, body at 10000. The recipient is
+  verified before sending, so a typo fails locally instead of silently at Reddit.
+  Note that Reddit returns no message id on success and refuses messages to the
+  authenticated account itself.
+- `join_subreddit(subreddit_name, unsubscribe)` - Subscribe or unsubscribe
 
 ## Example Queries
 

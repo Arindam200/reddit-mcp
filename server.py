@@ -1602,6 +1602,113 @@ def reply_to_comment(
 
 @mcp.tool()
 @require_write_access
+def send_message(username: str, subject: str, message: str) -> Dict[str, Any]:
+    """Send a private message (DM) to a Reddit user.
+
+    Args:
+        username: Recipient's username, with or without the u/ prefix
+        subject: Subject line (1-100 characters, Reddit's limit)
+        message: Message body (1-10000 characters)
+
+    Returns:
+        Dictionary describing the sent message
+
+    Raises:
+        ValueError: If input validation fails or the recipient does not exist
+        RuntimeError: For other errors while sending
+    """
+    manager = RedditClientManager()
+    if not manager.client:
+        raise RuntimeError("Reddit client not initialized")
+
+    # Input validation
+    if not username or not isinstance(username, str):
+        raise ValueError("Recipient username is required")
+    if not subject or not isinstance(subject, str):
+        raise ValueError("Subject is required")
+    if not message or not isinstance(message, str):
+        raise ValueError("Message body is required")
+    if len(subject) > 100:
+        raise ValueError("Subject must be 100 characters or fewer (Reddit's limit)")
+    if len(message) < 1 or len(message) > 10000:
+        raise ValueError("Message must be between 1 and 10000 characters")
+
+    # Accept u/name, /u/name and name alike
+    clean_username = username.strip().lstrip("/")
+    if clean_username.lower().startswith("u/"):
+        clean_username = clean_username[2:]
+    if not clean_username:
+        raise ValueError("Recipient username is required")
+
+    try:
+        redditor = manager.client.redditor(clean_username)
+
+        # Force a fetch so a typo fails here and not silently at Reddit
+        try:
+            recipient_id = redditor.id
+        except Exception as lookup_error:
+            logger.exception(f"Recipient u/{clean_username} not found: {lookup_error}")
+            raise ValueError(
+                f"User u/{clean_username} does not exist or is not reachable"
+            ) from lookup_error
+
+        sender = manager.client.user.me()
+        sender_name = getattr(sender, "name", "unknown")
+        if sender_name.lower() == clean_username.lower():
+            logger.warning("Sending a message to the authenticated account itself")
+
+        logger.info(
+            f"Sending message to u/{clean_username} "
+            f"(subject length {len(subject)}, body length {len(message)})"
+        )
+
+        try:
+            # praw's signature is keyword only
+            redditor.message(subject=subject, message=message)
+        except Exception as send_error:
+            text = str(send_error)
+            upper = text.upper()
+            logger.exception(f"Failed to send message to u/{clean_username}: {send_error}")
+            if "RATELIMIT" in upper:
+                raise RuntimeError(
+                    "You're doing that too much. Please wait before sending again."
+                ) from send_error
+            if "NOT_WHITELISTED_BY_USER_MESSAGE" in upper or "BLOCKED" in upper:
+                raise RuntimeError(
+                    f"u/{clean_username} does not accept private messages from you"
+                ) from send_error
+            if "USER_DOESNT_EXIST" in upper:
+                raise ValueError(f"User u/{clean_username} does not exist") from send_error
+            raise RuntimeError(f"Failed to send message: {send_error}") from send_error
+
+        logger.info(f"Message sent to u/{clean_username}")
+
+        return {
+            "sent": True,
+            "recipient": f"u/{clean_username}",
+            "recipient_id": recipient_id,
+            "sender": f"u/{sender_name}",
+            "subject": subject,
+            "body_preview": message[:200],
+            "body_length": len(message),
+            "metadata": {
+                "sent_at": _format_timestamp(time.time()),
+                "note": (
+                    "Reddit's API returns no message ID on send. "
+                    "Check the sent folder to confirm delivery."
+                ),
+            },
+        }
+
+    except Exception as e:
+        logger.exception(f"Error in send_message to {username}: {e}")
+        if isinstance(e, (ValueError, RuntimeError)):
+            raise
+        raise RuntimeError(f"Failed to send message: {e}") from e
+
+
+@mcp.tool()
+@require_write_access
 def join_subreddit(subreddit_name: str, unsubscribe: bool = False) -> Dict[str, Any]:
     """Join (subscribe to) or leave (unsubscribe from) a subreddit.
 
@@ -2358,7 +2465,17 @@ def who_am_i() -> Dict[str, Any]:
 
         # Get user preferences and other attributes with safe defaults
         prefs = getattr(current_user, "prefs", {}) or {}
-        subreddit = getattr(current_user, "subreddit", {}) or {}
+        # praw >= 8 returns a UserSubreddit object here instead of a dict.
+        # The .get() calls further down would fail on it with
+        # "'UserSubreddit' object has no attribute 'get'".
+        subreddit = getattr(current_user, "subreddit", None)
+        if subreddit is not None and not isinstance(subreddit, dict):
+            subreddit = {
+                key: value
+                for key, value in vars(subreddit).items()
+                if not key.startswith("_")
+            }
+        subreddit = subreddit or {}
 
         # Build the user info dictionary
         user_info = {
